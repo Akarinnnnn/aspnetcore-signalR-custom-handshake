@@ -1054,7 +1054,20 @@ public partial class HubConnection : IAsyncDisposable
         Log.SendingHubHandshake(_logger);
 
         var handshakeRequest = new HandshakeRequestMessage(_protocol.Name, _protocol.Version);
-        HandshakeProtocol.WriteRequestMessage(handshakeRequest, startingConnectionState.Connection.Transport.Output);
+
+        // Allow protocol to handle handshake
+        var customHandshake = _protocol.GetMessageBytes(handshakeRequest);
+        if (customHandshake.Length == 0)
+        {
+            // Protocol decided not to handle
+            HandshakeProtocol.WriteRequestMessage(handshakeRequest, startingConnectionState.Connection.Transport.Output);
+        }
+        else
+        {
+            var output = startingConnectionState.Connection.Transport.Output;
+            customHandshake.CopyTo(output.GetSpan(customHandshake.Length));
+            output.Advance(customHandshake.Length);
+        }
 
         var sendHandshakeResult = await startingConnectionState.Connection.Transport.Output.FlushAsync(CancellationToken.None).ConfigureAwait(false);
 
@@ -1088,13 +1101,17 @@ public partial class HubConnection : IAsyncDisposable
                         // Read first message out of the incoming data
                         if (!buffer.IsEmpty)
                         {
-                            if (HandshakeProtocol.TryParseResponseMessage(ref buffer, out var message))
+                            // Let prtocol touch response first
+                            if (_protocol.TryParseMessage(ref buffer, out var customMessage) || HandshakeProtocol.TryParseResponseMessage(ref buffer, out var message))
                             {
                                 // Adjust consumed and examined to point to the end of the handshake
                                 // response, this handles the case where invocations are sent in the same payload
                                 // as the negotiate response.
                                 consumed = buffer.Start;
                                 examined = consumed;
+
+                                if(messageCustom is HandshakeResponseMessage customHandshakeMessage)
+                                    message = customHandshakeMessage;
 
                                 if (message.Error != null)
                                 {
