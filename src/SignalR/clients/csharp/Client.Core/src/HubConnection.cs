@@ -1052,7 +1052,20 @@ namespace Microsoft.AspNetCore.SignalR.Client
             Log.SendingHubHandshake(_logger);
 
             var handshakeRequest = new HandshakeRequestMessage(_protocol.Name, _protocol.Version);
-            HandshakeProtocol.WriteRequestMessage(handshakeRequest, startingConnectionState.Connection.Transport.Output);
+
+            // Allow protocol to handle handshake
+            var customHandshakeRequest = _protocol.GetMessageBytes(handshakeRequest);
+            if (customHandshakeRequest.Length == 0)
+            {
+                // Protocol decided not to handle
+                HandshakeProtocol.WriteRequestMessage(handshakeRequest, startingConnectionState.Connection.Transport.Output);
+            }
+            else
+            {
+                var output = startingConnectionState.Connection.Transport.Output;
+                customHandshakeRequest.CopyTo(output.GetMemory(customHandshakeRequest.Length));
+                output.Advance(customHandshakeRequest.Length);
+            }
 
             var sendHandshakeResult = await startingConnectionState.Connection.Transport.Output.FlushAsync(CancellationToken.None);
 
@@ -1086,7 +1099,18 @@ namespace Microsoft.AspNetCore.SignalR.Client
                             // Read first message out of the incoming data
                             if (!buffer.IsEmpty)
                             {
-                                if (HandshakeProtocol.TryParseResponseMessage(ref buffer, out var message))
+                                HandshakeResponseMessage? message = null;
+                                // Let prtocol touch response first if a custom handshake request sent
+                                if (customHandshakeRequest.Length != 0
+                                    && _protocol.TryParseMessage(ref buffer, startingConnectionState, out var customMessage)
+                                    && customMessage is HandshakeResponseMessage customHandshakeMessage)
+                                    message = customHandshakeMessage;
+                                else
+                                #pragma warning disable CA1806 // 不要忽略方法结果
+                                    HandshakeProtocol.TryParseResponseMessage(ref buffer, out message);
+                                #pragma warning restore CA1806 // Default value of `message` has been set
+
+                                if (message != null)
                                 {
                                     // Adjust consumed and examined to point to the end of the handshake
                                     // response, this handles the case where invocations are sent in the same payload
